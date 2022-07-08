@@ -36,7 +36,7 @@ public class MarketingService {
         int currentBalance=user.getBalance();
 
 
-        if(currentBalance>cost){
+        if(currentBalance>=cost){
             user.setBalance(currentBalance-cost);
             userRepository.save(user);
         }

@@ -45,4 +45,9 @@ public interface MatrixRepository extends JpaRepository<Matrix,Long>,
             ")\n" +
             "SELECT * FROM category_path limit 7;",nativeQuery = true)
     LinkedList<Matrix> findByParentMatrixId(@Param("parent_id")Long id);
+
+    Optional<Matrix> findById(Long id);
+
+
+
 }

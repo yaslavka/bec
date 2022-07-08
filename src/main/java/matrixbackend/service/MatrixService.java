@@ -13,6 +13,7 @@ import matrixbackend.helper.BinaryTree;
 import matrixbackend.helper.Node;
 import matrixbackend.jwt.JwtTokenProvider;
 import matrixbackend.repository.*;
+import matrixbackend.utils.Finans;
 import net.minidev.json.JSONObject;
 import org.modelmapper.ModelMapper;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -54,78 +55,102 @@ public class MatrixService {
     @Autowired
     MarketingService marketingService;
 
+    @Autowired
+    Finans finans;
 
-    public List<MatrixTypeDTO> getAllMatrixType(){
+
+    public List<MatrixTypeDTO> getAllMatrixType(String token){
+
+        String login = jwtTokenProvider.getLoginFromToken(token.substring(7));
+        Optional <User> user=userRepository.findByUsername(login);
+
+
 
         List<TypeMatrix> typeMatrixList =matrixTypeRepository.findAll();
         List<MatrixTypeDTO> matrixTypeDTOList= typeMatrixList.stream()
-                .map(typeMatrix -> new MatrixTypeDTO(typeMatrix))
+                .map(typeMatrix -> new MatrixTypeDTO(typeMatrix,
+                        (matrixTableRepository.findByUserAndTypeMatrixId(user.get(), typeMatrix.getId()).isPresent())? matrixTableRepository.findByUserAndTypeMatrixId(user.get(), typeMatrix.getId()).get().getCount() : 0 ))
                 .collect(Collectors.toList());
         return matrixTypeDTOList;
+
 
     }
 
 
     @Transactional
-    public void createNewMatrix(String token, Long matrix_type) throws Exception {
+    public boolean createNewMatrix(String token, Long matrix_type) throws Exception {
+
+        boolean result = false;
+
         String login = jwtTokenProvider.getLoginFromToken(token.substring(7));
         Optional <User> user=userRepository.findByUsername(login);
 
 
-        TypeMatrix typeMatrix =matrixTypeRepository.getById(matrix_type);
-        List<Matrix> matrices=new ArrayList<>();
-        Optional <MatrixTable> matrixTableExist=matrixTableRepository.findByUserAndTypeMatrixId(user.get(),matrix_type);
+        int cost=matrixTypeRepository.getById(matrix_type).getSum();
+
+        int currentBalance=user.get().getBalance();
+
+        //проверка баланса перед созданием записей в бд
+        if(currentBalance>=cost) {
+
+            TypeMatrix typeMatrix = matrixTypeRepository.getById(matrix_type);
+            List<Matrix> matrices = new ArrayList<>();
+            Optional<MatrixTable> matrixTableExist = matrixTableRepository.findByUserAndTypeMatrixId(user.get(), matrix_type);
 
 
-
-        Matrix newMatrix=Matrix.builder()
-                .user(user.get())
-                .build();
-
-
-
-
-        // Check if first matrixTable exist
-
-        //Marketing clones adding
-       matrixTableExist.ifPresentOrElse((matrixTable) -> {
-           int clones=matrixTable.getCount();
-           clones+=1;
-           matrixTable.setCount(clones);
-           matrixTableRepository.save(matrixTable);
-           },
-               ()->{
-                       Optional<MatrixTable> getParentMatrixTable=matrixTableRepository.findByUserAndTypeMatrixId(user.get().getReferral(),matrix_type);
-                       getParentMatrixTable.ifPresentOrElse((matrixParentTable) ->{
-                                   matrices.addAll(matrixRepository.findByParentMatrixId(matrixParentTable.getMatrixParent().getId()));
-                                   Node parent=new Node(matrixParentTable.getMatrixParent());
-                                   matrices.add(0,matrixParentTable.getMatrixParent());
-                                   matrices.add(matrices.size(),newMatrix);
-                                   binaryTree.root=binaryTree.insertLevelOrderMatrix(matrices,parent,0);
-                                   binaryTree.traverseLevelOrder();
-                                   matrixRepository.save(newMatrix);
-                               },
-                               ()->{
-                                   new Exception();
-                               }
-                       );
-            MatrixTable matrixTableNew = MatrixTable.builder()
-                    .count(0)
-                    .typeMatrix(typeMatrix)
-                    .IsActive(true)
-                    .matrixParent(newMatrix)
+            Matrix newMatrix = Matrix.builder()
                     .user(user.get())
                     .build();
-            matrixTableRepository.save(matrixTableNew);
-            matrixRepository.save(newMatrix);
-            return;
-        });
-
-        // Marketing
 
 
+            // Check if first matrixTable exist
 
-        marketingService.writeOffFromBalance(user.get(),matrix_type);
+            //Marketing clones adding
+            matrixTableExist.ifPresentOrElse((matrixTable) -> {
+                        int clones = matrixTable.getCount();
+                        clones += 1;
+                        matrixTable.setCount(clones);
+                        matrixTableRepository.save(matrixTable);
+                    },
+                    () -> {
+                        Optional<MatrixTable> getParentMatrixTable = matrixTableRepository.findByUserAndTypeMatrixId(user.get().getReferral(), matrix_type);
+                        getParentMatrixTable.ifPresentOrElse((matrixParentTable) -> {
+                                    matrices.addAll(matrixRepository.findByParentMatrixId(matrixParentTable.getMatrixParent().getId()));
+                                    Node parent = new Node(matrixParentTable.getMatrixParent());
+                                    matrices.add(0, matrixParentTable.getMatrixParent());
+                                    matrices.add(matrices.size(), newMatrix);
+                                    binaryTree.root = binaryTree.insertLevelOrderMatrix(matrices, parent, 0);
+                                    binaryTree.traverseLevelOrder();
+                                    matrixRepository.save(newMatrix);
+
+                                    //сделать проверку на размер матрицы, возможно у матрицы к торой присоединяем уже нужный рамер и надо дать поощерение
+                            
+                                },
+                                () -> {
+                                    new Exception();
+                                }
+                        );
+                        MatrixTable matrixTableNew = MatrixTable.builder()
+                                .count(0)
+                                .typeMatrix(typeMatrix)
+                                .IsActive(true)
+                                .matrixParent(newMatrix)
+                                .user(user.get())
+                                .build();
+                        matrixTableRepository.save(matrixTableNew);
+                        matrixRepository.save(newMatrix);
+                        return;
+                    });
+
+            // Marketing
+
+
+            marketingService.writeOffFromBalance(user.get(), matrix_type);
+
+            result = true;
+        }
+
+        return result;
     };
 
 
@@ -287,8 +312,11 @@ public class MatrixService {
     }
 
     @Transactional
-    public void installMatrixToBinaryTree(String token,
+    public boolean installMatrixToBinaryTree(String token,
                                           InstallCloneRequestDTO installCloneRequestDTO) {
+        boolean result = false;
+        boolean doSafe = false;
+
         binaryTree.root=null;
         String login = jwtTokenProvider.getLoginFromToken(token.substring(7));
         Optional<User> user = userRepository.findByUsername(login);
@@ -296,6 +324,18 @@ public class MatrixService {
         List <Matrix> matrixList=matrixRepository.findByParentMatrixId(matrixParent.get().getId());
         binaryTree.root=new Node(matrixParent.get());
 
+        Matrix tempMatrix = matrixParent.get();
+
+        //поиск самого головного элемента матрицы
+        while (tempMatrix.getParentMatrix() != null) {
+            tempMatrix = matrixRepository.findById(tempMatrix.getParentMatrix().getId()).get();
+        }
+
+        //получаем элемент из matrix_table для извлечения типа матрицы
+        MatrixTable tempMatrixTable = matrixTableRepository.findByMatrixParent(tempMatrix).get();
+
+        //получаем запись из matrix_table для конкретного пользователя
+        MatrixTable matrixTable = matrixTableRepository.findByUserAndTypeMatrixId(user.get(), tempMatrixTable.getTypeMatrix().getId()).get();
 
         for (int i = 0; i <matrixList.size() ; i++) {
             binaryTree.addRecursive(binaryTree.root,matrixList.get(i));
@@ -314,48 +354,137 @@ public class MatrixService {
 
         switch (value){
             case 1:
-                binaryTree.root.left.parent=newMatrix;
+                //binaryTree.root.left.parent=newMatrix;
+                binaryTree.root.left = new Node(newMatrix);
                 parentMatrix=binaryTree.root.parent;
                 newMatrix.setParentMatrix(parentMatrix);
                 newMatrix.setSideMatrix(SideMatrix.LEFT);
+                doSafe = true;
                 break;
             case 2:
                 binaryTree.root.right=new Node(newMatrix);
                 parentMatrix=binaryTree.root.parent;
                 newMatrix.setParentMatrix(parentMatrix);
                 newMatrix.setSideMatrix(SideMatrix.RIGHT);
+                doSafe = true;
                 break;
             case 3:
-                binaryTree.root.left.left=new Node(newMatrix);;
-                parentMatrix=binaryTree.root.left.parent;
-                newMatrix.setParentMatrix(parentMatrix);
-                newMatrix.setSideMatrix(SideMatrix.LEFT);
+                if (binaryTree.root.right != null) {
+                    binaryTree.root.left.left = new Node(newMatrix);
+
+                    parentMatrix = binaryTree.root.left.parent;
+                    newMatrix.setParentMatrix(parentMatrix);
+                    newMatrix.setSideMatrix(SideMatrix.LEFT);
+
+                    finans.IncreaseUserBalance(token, 500);
+                    doSafe = true;
+                }
                 break;
 
             case 4:
-                binaryTree.root.left.right=new Node(newMatrix);;
-                parentMatrix=binaryTree.root.left.parent;
-                newMatrix.setParentMatrix(parentMatrix);
-                newMatrix.setSideMatrix(SideMatrix.RIGHT);
+                if (binaryTree.root.right != null) {
+                    binaryTree.root.left.right = new Node(newMatrix);
+
+                    parentMatrix = binaryTree.root.left.parent;
+                    newMatrix.setParentMatrix(parentMatrix);
+                    newMatrix.setSideMatrix(SideMatrix.RIGHT);
+                    doSafe = true;
+                }
                 break;
 
             case 5:
-                binaryTree.root.right.left=new Node(newMatrix);;
-                parentMatrix=binaryTree.root.right.parent;
-                newMatrix.setParentMatrix(parentMatrix);
-                newMatrix.setSideMatrix(SideMatrix.LEFT);
+                if (binaryTree.root.left != null) {
+                    binaryTree.root.right.left = new Node(newMatrix);
+
+                    parentMatrix = binaryTree.root.right.parent;
+                    newMatrix.setParentMatrix(parentMatrix);
+                    newMatrix.setSideMatrix(SideMatrix.LEFT);
+                    doSafe = true;
+                }
                 break;
 
             case 6:
-                binaryTree.root.right.right=new Node(newMatrix);;
-                parentMatrix=binaryTree.root.right.parent;
-                newMatrix.setParentMatrix(parentMatrix);
-                newMatrix.setSideMatrix(SideMatrix.RIGHT);
+                if (binaryTree.root.left != null) {
+                    binaryTree.root.right.right = new Node(newMatrix);
+
+                    parentMatrix = binaryTree.root.right.parent;
+                    newMatrix.setParentMatrix(parentMatrix);
+                    newMatrix.setSideMatrix(SideMatrix.RIGHT);
+                    doSafe = true;
+                }
                 break;
         }
+        if (doSafe && matrixTable.getCount() >= 1) {
+            matrixRepository.save(newMatrix);
 
-        matrixRepository.save(newMatrix);
+            //вычитаю count при установке клона
+            matrixTable.setCount(matrixTable.getCount()-1);
+            matrixTableRepository.save(matrixTable);
+
+            // если матрица заполнена, то выполняю проверку и выделение матрицы выше уровнем
+            
+            if (matrixRepository.findByParentMatrixId(matrixParent.get().getId()).size() == 6)
+                checkUpMatrix(user.get(), matrixTable.getTypeMatrix().getId());
+
+            result = true;
+        }
+
+        return result;
     }
+
+    // проверка существования матрица высшего порядка, куплена ли она и присвоения, если не куплена
+    public boolean checkUpMatrix (User user, Long matrix_type) {
+
+        // берем текущий типа матрицы и проверяем есть тип матрицы со старшим идентификатором
+        List<TypeMatrix> typeMatrix = matrixTypeRepository.findAllAndSortById();
+        int i = 0;
+        boolean isModified = false;
+        for (TypeMatrix tM : typeMatrix) {
+            i++;
+            if (tM.getId() == matrix_type && i < typeMatrix.size()) {
+                matrix_type = typeMatrix.get(i).getId();
+                isModified = true;
+                break;
+            }
+        }
+
+        if (isModified) {
+            TypeMatrix typeMatrixNew = matrixTypeRepository.getById(matrix_type);
+
+            Optional<MatrixTable> matrixTableExist = matrixTableRepository.findByUserAndTypeMatrixId(user, typeMatrixNew.getId());
+
+            matrixTableExist.ifPresentOrElse((matrixTable) -> {
+
+
+                int clones = matrixTable.getCount();
+                System.out.println("До добавления: " + clones);
+                clones += 1;
+                matrixTable.setCount(clones);
+                matrixTableRepository.save(matrixTable);
+                System.out.println("После добавления: " + clones);
+
+            }, () -> {
+                Matrix newMatrix = Matrix.builder()
+                        .user(user)
+                        .build();
+
+
+                MatrixTable matrixTableNew = MatrixTable.builder()
+                        .count(0)
+                        .typeMatrix(typeMatrixNew)
+                        .IsActive(true)
+                        .matrixParent(newMatrix)
+                        .user(user)
+                        .build();
+                matrixTableRepository.save(matrixTableNew);
+
+                matrixRepository.save(newMatrix);
+            });
+        }
+
+        return true;
+    }
+
 
     public List<CloneStateDTO> getCloneStates() {
         List <CloneStat> cloneStats=cloneStatRepository.findAll();
@@ -364,4 +493,19 @@ public class MatrixService {
                 .collect(Collectors.toList());
         return cloneStateDTOS;
     }
+
+    public Map getClone (String token,
+                         Long matrixType) {
+
+        String login = jwtTokenProvider.getLoginFromToken(token.substring(7));
+        Optional<User> user = userRepository.findByUsername(login);
+        Optional<MatrixTable> matrixTable = matrixTableRepository.findByUserAndTypeMatrixId(user.get(), matrixType);
+
+        HashMap hashMap=new HashMap();
+        hashMap.put("count", matrixTable.get().getCount());
+        return hashMap;
+    }
+
+
+
 }

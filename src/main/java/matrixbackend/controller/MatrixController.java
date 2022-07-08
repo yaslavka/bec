@@ -3,6 +3,7 @@ package matrixbackend.controller;
 import matrixbackend.dto.*;
 import matrixbackend.entity.Matrix;
 import matrixbackend.repository.CloneStatRepository;
+import matrixbackend.repository.MatrixRepository;
 import matrixbackend.service.MatrixService;
 import net.minidev.json.JSONObject;
 import org.modelmapper.ModelMapper;
@@ -25,6 +26,9 @@ public class MatrixController {
     @Autowired
     CloneStatRepository cloneStatRepository;
 
+    @Autowired
+    MatrixRepository matrixRepository;
+
 
 
     @Autowired
@@ -32,9 +36,10 @@ public class MatrixController {
 
     @GetMapping(value = "/type")
     public ResponseEntity getAllMatrixType(
+            @RequestHeader(name="Authorization") String token,
             @QuerydslPredicate(root = Matrix.class) Predicate predicate){
         HashMap hashMap=new HashMap();
-        List <MatrixTypeDTO> list =matrixService.getAllMatrixType();
+        List <MatrixTypeDTO> list =matrixService.getAllMatrixType(token);
         hashMap.put("items",list);
             return ResponseEntity.ok(hashMap);
     }
@@ -56,8 +61,12 @@ public class MatrixController {
     public ResponseEntity buyNewMatrix(@RequestHeader(name="Authorization") String token,
                                           @RequestBody BuyMatrixDTO  matrix) throws Exception {
         HashMap hashMap=new HashMap();
-        matrixService.createNewMatrix(token,matrix.getMatrix_id());
-        hashMap.put("status","success");
+        if (matrixService.createNewMatrix(token,matrix.getMatrix_id()))
+            hashMap.put("status","success");
+        else {
+            hashMap.put("status", "error");
+            return ResponseEntity.status(406).build();
+        }
         return ResponseEntity.ok(hashMap);
     }
 
@@ -73,7 +82,8 @@ public class MatrixController {
     @PostMapping(value = "/target-install-clone")
     public ResponseEntity installCloneToBoard(@RequestHeader(name="Authorization") String token,
                                               @RequestBody InstallCloneRequestDTO installCloneRequestDTO){
-        matrixService.installMatrixToBinaryTree(token,installCloneRequestDTO);
+        if (!matrixService.installMatrixToBinaryTree(token,installCloneRequestDTO))
+            return ResponseEntity.status(406).build(); //Если установка клона пошла не по плану, кидаем ошибку
         return ResponseEntity.ok().build();
     }
 
@@ -88,9 +98,24 @@ public class MatrixController {
     }
 
     @GetMapping("/clone")
-    public ResponseEntity<Map> getCloneCount(@RequestParam Long matrix_type){
-        HashMap hashMap=new HashMap();
-        hashMap.put("count",0);
+    public ResponseEntity<Map> getCloneCount(@RequestParam Long matrix_type,
+                                             @RequestHeader(name="Authorization") String token){
+        //HashMap hashMap=new HashMap();
+        //hashMap.put("count",0);
+
+        HashMap hashMap = (HashMap) matrixService.getClone(token, matrix_type);
+
+        //System.out.println(hashMap);
+
         return ResponseEntity.ok(hashMap);
+    }
+
+    @GetMapping("/structure-upper")
+    public ResponseEntity getParentMatrix (@RequestParam Long matrix_id,
+                                                @RequestHeader(name="Authorization") String token) throws Exception {
+
+        HashMap map =new HashMap();
+        map.put("items",matrixService.getAllActivatedMatrices(matrixRepository.findById(matrix_id).get().getParentMatrix().getId(),token, null));
+        return ResponseEntity.ok(map);
     }
 }
